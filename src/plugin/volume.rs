@@ -6,6 +6,7 @@ pub struct Volume {
     pub name: String,
 
     #[serde(rename = "Mountpoint")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub mountpoint: Option<String>,
 }
 
@@ -41,10 +42,8 @@ pub struct MountVolumeResponse {
 
 #[derive(Serialize, Deserialize, PartialEq)]
 pub struct GetVolumeResponse {
-    #[serde(rename = "Name")]
-    pub name: String,
-    #[serde(rename = "Mountpoint")]
-    pub mountpoint: Option<String>,
+    #[serde(rename = "Volume")]
+    pub volume: Volume,
     #[serde(rename = "Err")]
     pub err: String,
 }

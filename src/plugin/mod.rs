@@ -49,7 +49,7 @@ pub trait VolumeDriver: Send + Sync {
 }
 
 pub struct VolumePlugin<T> {
-    __socket: String,
+    __socket: std::path::PathBuf,
     __driver: Arc<T>,
 }
 
@@ -57,9 +57,9 @@ impl<T> VolumePlugin<T>
 where
     T: VolumeDriver + 'static,
 {
-    pub fn new(socket: &str, driver: Arc<T>) -> Self {
+    pub fn new(socket: &std::path::Path, driver: Arc<T>) -> Self {
         Self {
-            __socket: String::from(socket),
+            __socket: socket.to_path_buf(),
             __driver: driver,
         }
     }
@@ -72,7 +72,7 @@ where
         }
         println!(
             "Listening on unix://{path} with 1 thread.",
-            path = self.__socket
+            path = self.__socket.to_str().unwrap()
         );
 
         let driver = Arc::clone(&self.__driver);
@@ -95,51 +95,55 @@ where
                 Err(_) => "".to_string(),
             };
 
+            println!("-> {} {}", parts.method, parts.uri.path());
+
             let (status, response) = match (parts.method, parts.uri.path()) {
                 (Method::POST, "/Plugin.Activate") => {
                     Self::handle_plugin_activate(ActivateResponse {
                         implements: vec![Protocol::VolumeDriver],
                     })
                 }
-                (Method::POST, "/Volume.Create") => {
+                (Method::POST, "/VolumeDriver.Create") => {
                     match serde_json::from_str::<volume::CreateVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_create(p, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.Remove") => {
+                (Method::POST, "/VolumeDriver.Remove") => {
                     match serde_json::from_str::<volume::RemoveVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_remove(p.name, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.Mount") => {
+                (Method::POST, "/VolumeDriver.Mount") => {
                     match serde_json::from_str::<volume::MountVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_mount(p.name, p.id, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.Path") => {
+                (Method::POST, "/VolumeDriver.Path") => {
                     match serde_json::from_str::<volume::PathVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_path(p.name, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.Unmount") => {
+                (Method::POST, "/VolumeDriver.Unmount") => {
                     match serde_json::from_str::<volume::MountVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_unmount(p.name, p.id, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.Get") => {
+                (Method::POST, "/VolumeDriver.Get") => {
                     match serde_json::from_str::<volume::GetVolumeRequest>(&payload) {
                         Ok(p) => Self::handle_volume_get(p.name, working_driver),
                         Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
                     }
                 }
-                (Method::POST, "/Volume.List") => Self::handle_volume_list(working_driver),
+                (Method::POST, "/VolumeDriver.List") => Self::handle_volume_list(working_driver),
                 _ => (StatusCode::BAD_REQUEST, String::from("Not Implemented")),
             };
+
+            println!("<- {} {}", &status, &response);
 
             Ok(Response::builder()
                 .status(status)
@@ -175,7 +179,7 @@ where
         match T::mount(&driver, name, id) {
             Ok(mountpoint) => {
                 match serde_json::to_string(&volume::MountVolumeResponse {
-                    mountpoint: mountpoint,
+                    mountpoint,
                     err: "".to_string(),
                 }) {
                     Ok(p) => (StatusCode::OK, p),
@@ -189,7 +193,7 @@ where
         match T::path(&driver, name) {
             Ok(mountpoint) => {
                 match serde_json::to_string(&volume::MountVolumeResponse {
-                    mountpoint: mountpoint,
+                    mountpoint,
                     err: "".to_string(),
                 }) {
                     Ok(p) => (StatusCode::OK, p),
@@ -209,8 +213,10 @@ where
         match T::get(&driver, name) {
             Ok(vol) => {
                 match serde_json::to_string(&volume::GetVolumeResponse {
-                    name: vol.name,
-                    mountpoint: vol.mountpoint,
+                    volume: volume::Volume {
+                        name: vol.name,
+                        mountpoint: vol.mountpoint,
+                    },
                     err: "".to_string(),
                 }) {
                     Ok(p) => (StatusCode::OK, p),
