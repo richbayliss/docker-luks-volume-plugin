@@ -2,6 +2,7 @@ mod luks;
 mod plugin;
 
 use clap::{App, Arg};
+use std::path::Path;
 use std::sync::Arc;
 
 fn main() {
@@ -9,6 +10,15 @@ fn main() {
         .version("1.0")
         .author("Rich B. <richbayliss@gmail.com>")
         .about("Provides a Docker volume plugin for LUKS encrypted volumes.")
+        .arg(
+            Arg::with_name("unix_socket")
+                .short("s")
+                .long("unix-socket")
+                .value_name("FILE")
+                .help("The unix socket location to listen on.")
+                .default_value("/run/docker/plugins/luks.sock")
+                .takes_value(true),
+        )
         .arg(
             Arg::with_name("data_dir")
                 .short("d")
@@ -40,8 +50,12 @@ fn main() {
             .to_string(),
     };
 
+    let listen_socket = args
+        .value_of("unix_socket")
+        .expect("A value for --unix-socket must be provided");
+
     let host: plugin::VolumePlugin<luks::LuksVolumeDriver> =
-        plugin::VolumePlugin::new("./luks.sock", Arc::new(driver));
+        plugin::VolumePlugin::new(Path::new(&listen_socket), Arc::new(driver));
 
     if let Err(err) = host.start() {
         eprintln!("error starting plugin host: {}", err)
