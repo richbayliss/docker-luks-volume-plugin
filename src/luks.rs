@@ -129,7 +129,10 @@ impl VolumeDriver for LuksVolumeDriver {
                 format_block_device(Path::new(&path), &xfs_options)
                     .map(|_| ())
                     .map_err(|_| format!("Unable to format the LUKS device as Ext4: {}", &path))?;
-                self.detach_dm_device(&uuid.to_string())
+
+                let _ = self.detach_dm_device(&uuid.to_string());
+
+                Ok(())
             }
             Err(e) => Err(e),
         }
