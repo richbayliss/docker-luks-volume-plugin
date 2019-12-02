@@ -22,9 +22,9 @@ impl LuksVolumeDriver {
         Command::new("dd")
             .arg("if=/dev/zero")
             .arg(format!("of={}", location.to_str().unwrap()))
-            .arg("bs=1")
-            .arg("count=1")
-            .arg("seek=1G")
+            .arg("bs=1G")
+            .arg("count=0")
+            .arg("seek=1")
             .status()
             .map(|_| ())
             .map_err(|_| ())
@@ -121,10 +121,10 @@ impl VolumeDriver for LuksVolumeDriver {
                     .map(|_| String::default())
                     .map_err(|_| String::from("Unable to open the LUKS volume"))?;
                 let xfs_options = Filesystem::Ext4 {
-                    inode_size: 512,
-                    stride: Some(2),
+                    inode_size: 256,
+                    reserved_blocks_percentage: 5,
+                    stride: None,
                     stripe_width: None,
-                    reserved_blocks_percentage: 10,
                 };
                 format_block_device(Path::new(&path), &xfs_options)
                     .map(|_| ())
