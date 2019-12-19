@@ -123,15 +123,7 @@ where
                     };
 
                     serde_json::from_str(&payload).map_err(|_| PayloadError::Overflow)
-                }), // self.stream
-                    // .take()
-                    // .unwrap()
-                    // .from_err()
-                    // .fold(BytesMut::with_capacity(8192), move |mut body, chunk| {
-                    //     body.extend_from_slice(&chunk);
-                    //     Ok(body)
-                    // })
-                    // .and_then(|body| serde_json::from_slice::<U>(body))
+                }),
         ));
         self.poll()
     }

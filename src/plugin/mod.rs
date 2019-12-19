@@ -10,7 +10,7 @@ use std::fs;
 use std::io;
 use std::sync::Arc;
 
-use volume::{
+use crate::plugin::volume::{
     Capabilities, CreateVolumeRequest, GetVolumeRequest, MountVolumeRequest, PathVolumeRequest,
     RemoveVolumeRequest, Scope, Volume,
 };
@@ -215,25 +215,19 @@ where
     }
     fn handle_volume_mount(name: String, id: String, driver: Arc<T>) -> RpcResponse {
         match T::mount(&driver, String::from(&name), id) {
-            Ok(mountpoint) => {
-                println!("{} {}", &name, mountpoint);
-                HttpResponse::Ok().json(volume::MountVolumeResponse {
-                    mountpoint,
-                    err: "".to_string(),
-                })
-            }
+            Ok(mountpoint) => HttpResponse::Ok().json(volume::MountVolumeResponse {
+                mountpoint,
+                err: "".to_string(),
+            }),
             Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
     fn handle_volume_path(name: String, driver: Arc<T>) -> RpcResponse {
         match T::path(&driver, name) {
-            Ok(mountpoint) => {
-                println!("{}", mountpoint);
-                HttpResponse::Ok().json(volume::MountVolumeResponse {
-                    mountpoint,
-                    err: "".to_string(),
-                })
-            }
+            Ok(mountpoint) => HttpResponse::Ok().json(volume::MountVolumeResponse {
+                mountpoint,
+                err: "".to_string(),
+            }),
             Err(e) => {
                 info!("{}", e);
                 HttpResponse::BadRequest().json(RpcError::from_str(&e))
@@ -247,18 +241,14 @@ where
         }
     }
     fn handle_volume_get(name: String, driver: Arc<T>) -> RpcResponse {
-        println!("{:?}", name);
         match T::get(&driver, name) {
-            Ok(vol) => {
-                println!("{:?}", vol.mountpoint);
-                HttpResponse::Ok().json(volume::GetVolumeResponse {
-                    volume: volume::Volume {
-                        name: vol.name,
-                        mountpoint: vol.mountpoint,
-                    },
-                    err: "".to_string(),
-                })
-            }
+            Ok(vol) => HttpResponse::Ok().json(volume::GetVolumeResponse {
+                volume: volume::Volume {
+                    name: vol.name,
+                    mountpoint: vol.mountpoint,
+                },
+                err: "".to_string(),
+            }),
             Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }

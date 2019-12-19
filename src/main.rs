@@ -1,12 +1,28 @@
+extern crate actix_http;
+extern crate actix_web;
+extern crate base64;
+extern crate block_utils;
+extern crate clap;
+extern crate cryptsetup_rs;
+extern crate derive_more;
+extern crate futures;
 extern crate lazy_static;
+extern crate log;
+extern crate openssl;
+extern crate serde;
+extern crate serde_json;
 extern crate simple_logger;
+extern crate url;
+extern crate uuid;
 
+mod config_json;
 mod crypto;
 mod hsm;
 mod luks;
 mod plugin;
 
 use clap::{App, Arg};
+use config_json::ConfigJson;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,7 +30,7 @@ fn main() {
     simple_logger::init_with_level(log::Level::Info).expect("Unable to initialise the logger");
 
     let args = App::new("LUKS Volume Driver")
-        .version("1.0")
+        .version("0.1")
         .author("Rich B. <richbayliss@gmail.com>")
         .about("Provides a Docker volume plugin for LUKS encrypted volumes.")
         .arg(
@@ -45,34 +61,12 @@ fn main() {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("device_uuid")
-                .short("u")
-                .long("device-uuid")
-                .env("CLOUDLOCK_DEVICE_UUID")
-                .value_name("UUID")
-                .help("The UUID of the device.")
-                .required(true)
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("api_key")
-                .short("k")
-                .long("api-key")
-                .env("CLOUDLOCK_API_KEY")
-                .value_name("KEY")
-                .help("The API key to use.")
-                .required(true)
-                .takes_value(true),
-        )
-        .arg(
-            Arg::with_name("api_host")
-                .short("h")
-                .long("api-host")
-                .env("CLOUDLOCK_API_HOST")
-                .value_name("HOST")
-                .help("The API host to use.")
-                .default_value("api.balena-cloud.com")
-                .required(false)
+            Arg::with_name("config_json")
+                .short("c")
+                .long("config-json")
+                .value_name("PATH")
+                .help("The path to the config.json for this device.")
+                .default_value("/mnt/boot/config.json")
                 .takes_value(true),
         )
         .arg(
@@ -87,24 +81,19 @@ fn main() {
         )
         .get_matches();
 
-    let uuid = &args
-        .value_of("device_uuid")
-        .expect("A value for the --device-uuid must be provided")
-        .to_string();
-    let api_key = &args
-        .value_of("api_key")
-        .expect("A value for the --api-key must be provided")
-        .to_string();
-    let api_host = &args
-        .value_of("api_host")
-        .expect("A value for the --api-host must be provided")
+    let config_json_path = &args
+        .value_of("config_json")
+        .expect("A value for --config-json must be provided")
         .to_string();
     let api_version = &args
         .value_of("api_version")
-        .expect("A value for the --api-version must be provided")
+        .expect("A value for --api-version must be provided")
         .to_string();
 
-    let hsm = hsm::cloudlock::CloudLockHSM::new(uuid, api_key, api_host, api_version)
+    let config =
+        ConfigJson::from_file(Path::new(&config_json_path)).expect("Unable to read config.json");
+
+    let hsm = hsm::cloudlock::CloudLockHSM::from_config(&config, api_version)
         .expect("Unable to initialise the CloudLock HSM");
 
     let driver = luks::LuksVolumeDriver::new(
