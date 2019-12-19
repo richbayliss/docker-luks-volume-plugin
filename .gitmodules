@@ -1,0 +1,3 @@
+[submodule "lib/cryptsetup-rs"]
+	path = lib/cryptsetup-rs
+	url = https://gitlab.com/solidninja/cryptsetup-rs.git

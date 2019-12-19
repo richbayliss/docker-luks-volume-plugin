@@ -1,23 +1,43 @@
+pub mod rpc_request;
 pub mod volume;
 
+use crate::plugin::rpc_request::RpcRequest;
+use actix_web::{middleware, web, App, HttpRequest, HttpResponse, HttpServer};
+use log::info;
 use serde::{Deserialize, Serialize};
-
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-
-use hyper::service::service_fn;
-use hyper::{Body, Method, Request, Response, StatusCode};
-
-use futures::stream::Stream;
-use futures::Future;
-
 use std::sync::Arc;
 
-use volume::Volume;
+use volume::{
+    Capabilities, CreateVolumeRequest, GetVolumeRequest, MountVolumeRequest, PathVolumeRequest,
+    RemoveVolumeRequest, Scope, Volume,
+};
 
-type RouterResponse =
-    Box<dyn Future<Item = Response<Body>, Error = Box<dyn std::error::Error + Send + Sync>> + Send>;
+type RpcResponse = HttpResponse;
+
+#[derive(Serialize, Deserialize, PartialEq)]
+struct RpcError {
+    #[serde(rename = "Err")]
+    err: String,
+}
+
+impl Default for RpcError {
+    fn default() -> Self {
+        Self {
+            err: String::default(),
+        }
+    }
+}
+
+impl RpcError {
+    fn from_str(err: &str) -> Self {
+        Self {
+            err: String::from(err),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, PartialEq)]
 pub enum Protocol {
@@ -49,8 +69,8 @@ pub trait VolumeDriver: Send + Sync {
 }
 
 pub struct VolumePlugin<T> {
-    __socket: std::path::PathBuf,
-    __driver: Arc<T>,
+    socket_path: std::path::PathBuf,
+    volume_driver: Arc<T>,
 }
 
 impl<T> VolumePlugin<T>
@@ -59,185 +79,196 @@ where
 {
     pub fn new(socket: &std::path::Path, driver: Arc<T>) -> Self {
         Self {
-            __socket: socket.to_path_buf(),
-            __driver: driver,
+            socket_path: socket.to_path_buf(),
+            volume_driver: driver,
         }
     }
 
     pub fn start(self: &Self) -> io::Result<()> {
-        if let Err(err) = fs::remove_file(&self.__socket) {
+        if let Err(err) = fs::remove_file(&self.socket_path) {
             if err.kind() != io::ErrorKind::NotFound {
                 return Err(err);
             }
         }
-        println!(
-            "Listening on unix://{path} with 1 thread.",
-            path = self.__socket.to_str().unwrap()
+        info!(
+            "Listening on unix://{path}",
+            path = self.socket_path.to_str().unwrap()
         );
 
-        let driver = Arc::clone(&self.__driver);
-        let svr = hyperlocal::server::Server::bind(&self.__socket, move || {
-            let inner = Arc::clone(&driver);
-            service_fn(move |req| Self::router(req, &inner))
+        let driver = Arc::clone(&self.volume_driver);
+        let socket_path = self.socket_path.to_owned();
+        HttpServer::new(move || {
+            App::new()
+                .data(driver.clone())
+                .wrap(middleware::Logger::default())
+                .service(
+                    web::resource("/Plugin.Activate").route(
+                        web::post().to(|| -> HttpResponse { Self::handle_plugin_activate() }),
+                    ),
+                )
+                .service(web::resource("/VolumeDriver.Create").route(web::post().to(
+                    move |create_request: RpcRequest<CreateVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_create(
+                            create_request.0,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.Remove").route(web::post().to(
+                    move |remove_request: RpcRequest<RemoveVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_remove(
+                            remove_request.0.name,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.Mount").route(web::post().to(
+                    move |mount_request: RpcRequest<MountVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_mount(
+                            mount_request.0.name,
+                            mount_request.0.id,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.Path").route(web::post().to(
+                    move |path_request: RpcRequest<PathVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_path(
+                            path_request.0.name,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.Unmount").route(web::post().to(
+                    move |mount_request: RpcRequest<MountVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_unmount(
+                            mount_request.0.name,
+                            mount_request.0.id,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.Get").route(web::post().to(
+                    move |get_request: RpcRequest<GetVolumeRequest>,
+                          req: HttpRequest|
+                          -> HttpResponse {
+                        Self::handle_volume_get(
+                            get_request.0.name,
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(web::resource("/VolumeDriver.List").route(web::post().to(
+                    move |req: HttpRequest| -> HttpResponse {
+                        Self::handle_volume_list(
+                            req.app_data::<Arc<T>>().expect("No driver found").clone(),
+                        )
+                    },
+                )))
+                .service(
+                    web::resource("/VolumeDriver.Capabilities").route(web::post().to(
+                        move || -> HttpResponse {
+                            HttpResponse::Ok().json(Capabilities {
+                                scope: Scope::Local,
+                            })
+                        },
+                    )),
+                )
         })
-        .expect("unable to create the socket server");
-        svr.run().expect("unable to start the socket server");
-        Ok(())
+        .bind_uds(socket_path)?
+        .run()
     }
 
-    fn router(req: Request<Body>, driver: &Arc<T>) -> RouterResponse {
-        let (parts, body) = req.into_parts();
-        let driver = Arc::clone(&driver);
-        Box::new(body.concat2().from_err().and_then(move |body| {
-            let working_driver = Arc::clone(&driver);
-            let payload = match String::from_utf8(body.to_vec()) {
-                Ok(v) => v,
-                Err(_) => "".to_string(),
-            };
+    fn handle_plugin_activate() -> RpcResponse {
+        let plugin_implements = ActivateResponse {
+            implements: vec![Protocol::VolumeDriver],
+        };
 
-            println!("-> {} {}", parts.method, parts.uri.path());
-
-            let (status, response) = match (parts.method, parts.uri.path()) {
-                (Method::POST, "/Plugin.Activate") => {
-                    Self::handle_plugin_activate(ActivateResponse {
-                        implements: vec![Protocol::VolumeDriver],
-                    })
-                }
-                (Method::POST, "/VolumeDriver.Create") => {
-                    match serde_json::from_str::<volume::CreateVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_create(p, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.Remove") => {
-                    match serde_json::from_str::<volume::RemoveVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_remove(p.name, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.Mount") => {
-                    match serde_json::from_str::<volume::MountVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_mount(p.name, p.id, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.Path") => {
-                    match serde_json::from_str::<volume::PathVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_path(p.name, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.Unmount") => {
-                    match serde_json::from_str::<volume::MountVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_unmount(p.name, p.id, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.Get") => {
-                    match serde_json::from_str::<volume::GetVolumeRequest>(&payload) {
-                        Ok(p) => Self::handle_volume_get(p.name, working_driver),
-                        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()),
-                    }
-                }
-                (Method::POST, "/VolumeDriver.List") => Self::handle_volume_list(working_driver),
-                _ => (StatusCode::BAD_REQUEST, String::from("Not Implemented")),
-            };
-
-            println!("<- {} {}", &status, &response);
-
-            Ok(Response::builder()
-                .status(status)
-                .body(response.into())
-                .unwrap())
-        }))
-    }
-
-    fn handle_plugin_activate(response: ActivateResponse) -> (StatusCode, String) {
-        (
-            StatusCode::OK,
-            serde_json::to_string(&response).unwrap_or_default(),
-        )
+        HttpResponse::Ok().json(plugin_implements)
     }
 
     fn handle_volume_create(
         create_request: volume::CreateVolumeRequest,
         driver: Arc<T>,
-    ) -> (StatusCode, String) {
+    ) -> RpcResponse {
         match T::create(&driver, create_request.name, create_request.opts) {
-            Ok(_) => (StatusCode::OK, String::from("{ \"Err\": \"\" }")),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Ok(_) => HttpResponse::Ok().json(RpcError::default()),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
 
-    fn handle_volume_remove(name: String, driver: Arc<T>) -> (StatusCode, String) {
+    fn handle_volume_remove(name: String, driver: Arc<T>) -> RpcResponse {
         match T::remove(&driver, name) {
-            Ok(_) => (StatusCode::OK, String::from("{ \"Err\": \"\" }")),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Ok(_) => HttpResponse::Ok().json(RpcError::default()),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
-    fn handle_volume_mount(name: String, id: String, driver: Arc<T>) -> (StatusCode, String) {
-        match T::mount(&driver, name, id) {
+    fn handle_volume_mount(name: String, id: String, driver: Arc<T>) -> RpcResponse {
+        match T::mount(&driver, String::from(&name), id) {
             Ok(mountpoint) => {
-                match serde_json::to_string(&volume::MountVolumeResponse {
+                println!("{} {}", &name, mountpoint);
+                HttpResponse::Ok().json(volume::MountVolumeResponse {
                     mountpoint,
                     err: "".to_string(),
-                }) {
-                    Ok(p) => (StatusCode::OK, p),
-                    Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
-                }
+                })
             }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
-    fn handle_volume_path(name: String, driver: Arc<T>) -> (StatusCode, String) {
+    fn handle_volume_path(name: String, driver: Arc<T>) -> RpcResponse {
         match T::path(&driver, name) {
             Ok(mountpoint) => {
-                match serde_json::to_string(&volume::MountVolumeResponse {
+                println!("{}", mountpoint);
+                HttpResponse::Ok().json(volume::MountVolumeResponse {
                     mountpoint,
                     err: "".to_string(),
-                }) {
-                    Ok(p) => (StatusCode::OK, p),
-                    Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
-                }
+                })
             }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Err(e) => {
+                info!("{}", e);
+                HttpResponse::BadRequest().json(RpcError::from_str(&e))
+            }
         }
     }
-    fn handle_volume_unmount(name: String, id: String, driver: Arc<T>) -> (StatusCode, String) {
+    fn handle_volume_unmount(name: String, id: String, driver: Arc<T>) -> RpcResponse {
         match T::unmount(&driver, name, id) {
-            Ok(_) => (StatusCode::OK, String::from("{ \"Err\": \"\" }")),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Ok(_) => HttpResponse::Ok().json(RpcError::default()),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
-    fn handle_volume_get(name: String, driver: Arc<T>) -> (StatusCode, String) {
+    fn handle_volume_get(name: String, driver: Arc<T>) -> RpcResponse {
+        println!("{:?}", name);
         match T::get(&driver, name) {
             Ok(vol) => {
-                match serde_json::to_string(&volume::GetVolumeResponse {
+                println!("{:?}", vol.mountpoint);
+                HttpResponse::Ok().json(volume::GetVolumeResponse {
                     volume: volume::Volume {
                         name: vol.name,
                         mountpoint: vol.mountpoint,
                     },
                     err: "".to_string(),
-                }) {
-                    Ok(p) => (StatusCode::OK, p),
-                    Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
-                }
+                })
             }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
-    fn handle_volume_list(driver: Arc<T>) -> (StatusCode, String) {
+    fn handle_volume_list(driver: Arc<T>) -> RpcResponse {
         match T::list(&driver) {
-            Ok(vols) => {
-                match serde_json::to_string(&volume::ListVolumesResponse {
-                    volumes: vols,
-                    err: "".to_string(),
-                }) {
-                    Ok(p) => (StatusCode::OK, p),
-                    Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
-                }
-            }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{ "Err": "{}" }}"#, e)),
+            Ok(vols) => HttpResponse::Ok().json(volume::ListVolumesResponse {
+                volumes: vols,
+                err: "".to_string(),
+            }),
+            Err(e) => HttpResponse::BadRequest().json(RpcError::from_str(&e)),
         }
     }
 }
